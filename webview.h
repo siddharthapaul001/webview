@@ -801,6 +801,18 @@ using browser_engine = cocoa_wkwebview_engine;
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "Shlwapi.lib")
 
+// MSIE headers and libs
+#include <comdef.h>
+#include <Exdisp.h>
+#include <string>
+#include <tchar.h>
+#include <Windows.h>
+#include <mshtml.h>
+
+#define WEBVIEW_KEY_FEATURE_BROWSER_EMULATION                                  \
+  "Software\\Microsoft\\Internet "                                             \
+  "Explorer\\Main\\FeatureControl\\FEATURE_BROWSER_EMULATION"
+
 // EdgeHTML headers and libs
 #include <objbase.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -826,6 +838,465 @@ public:
   virtual void eval(const std::string js) = 0;
   virtual void init(const std::string js) = 0;
   virtual void resize(HWND) = 0;
+};
+
+class ms_ie : public browser,
+  public IOleClientSite,
+  public IOleInPlaceSite,
+  public IStorage {
+public:
+  bool embed(HWND wnd, bool debug, msg_cb_t cb) override {
+    init_apartment(winrt::apartment_type::single_threaded);
+    
+    webview_fix_ie_compat_mode();
+
+    iComRefCount = 0;
+    hWndParent = wnd;
+
+    HRESULT hr;
+    hr = ::OleCreate(CLSID_WebBrowser,
+      IID_IOleObject, OLERENDER_DRAW, 0, this, this,
+      (void**)&oleObject);
+
+    if (FAILED(hr)) {
+      return false;
+    }
+
+    hr = oleObject->SetClientSite(this);
+    hr = OleSetContainedObject(oleObject, TRUE);
+
+    RECT posRect;
+
+    hr = oleObject->DoVerb(OLEIVERB_INPLACEACTIVATE,
+      NULL, this, -1, hWndParent, &posRect);
+    if (FAILED(hr)) {
+      return false;
+    }
+
+    hr = oleObject->QueryInterface(&webBrowser2);
+    if (FAILED(hr)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  static int webview_fix_ie_compat_mode() {
+    HKEY hKey;
+    DWORD ie_version = 11000;
+    TCHAR appname[MAX_PATH + 1];
+    TCHAR *p;
+    if (GetModuleFileName(NULL, appname, MAX_PATH + 1) == 0) {
+      return -1;
+    }
+    for (p = &appname[strlen(appname) - 1]; p != appname && *p != '\\'; p--) {
+    }
+    p++;
+    if (RegCreateKey(HKEY_CURRENT_USER, WEBVIEW_KEY_FEATURE_BROWSER_EMULATION,
+                    &hKey) != ERROR_SUCCESS) {
+      return -1;
+    }
+    if (RegSetValueEx(hKey, p, 0, REG_DWORD, (BYTE *)&ie_version,
+                      sizeof(ie_version)) != ERROR_SUCCESS) {
+      RegCloseKey(hKey);
+      return -1;
+    }
+    RegCloseKey(hKey);
+    return 0;
+  }
+
+  void navigate(const std::string url) override {
+    std::string htmlStr = html_from_uri(url);
+    std::string aboutBlank = "about:blank";
+    variant_t flags(0x02u); //navNoHistory
+    HRESULT hr;
+
+    if (htmlStr != "") {
+      bstr_t blankBStr(aboutBlank.c_str());
+      VARIANT blankBStrVariant;
+      ::VariantInit(&blankBStrVariant);
+      blankBStrVariant.vt = VT_BSTR;
+      blankBStrVariant.bstrVal = blankBStr;
+      this->webBrowser2->Navigate2(&blankBStrVariant, &flags, 0, 0, 0);
+
+      LPDISPATCH pDispatch;
+      hr = this->webBrowser2->get_Document(&pDispatch);
+      if (hr != S_OK) {
+        return;
+      }
+
+      IHTMLDocument2* document;
+      hr = pDispatch->QueryInterface(&document);
+
+      if (hr != S_OK) {
+        return;
+      }
+
+      bstr_t bstrHtml(htmlStr.c_str());
+      
+      SAFEARRAY *psaStrings = SafeArrayCreateVector(VT_VARIANT, 0, 1);
+      if (psaStrings == NULL) {
+      } else {
+        VARIANT *param;
+        hr = SafeArrayAccessData(psaStrings, (LPVOID*)&param);
+        if (hr != S_OK) {
+          return;
+        }
+        param->vt = VT_BSTR;
+        param->bstrVal = bstrHtml;
+        hr = SafeArrayUnaccessData(psaStrings);
+        if (hr != S_OK) {
+          return;
+        }
+        hr = document->write(psaStrings);
+        if (hr != S_OK) {
+          return;
+        }
+      }
+      if (psaStrings != NULL) {
+        SafeArrayDestroy(psaStrings);
+      }
+    } else {
+      bstr_t bstr_url(url.c_str());
+      this->webBrowser2->Navigate(bstr_url, &flags, 0, 0, 0);
+    }
+  }
+
+  void init(const std::string js) override {
+    init_js = init_js + "(function(){" + js + "})();";
+  }
+
+  void eval(const std::string js) override {
+    
+  }
+
+  void resize(HWND wnd) override {
+    if (webBrowser2 == nullptr) {
+      return;
+    }
+    RECT r;
+    GetClientRect(wnd, &r);
+    rObject = r;
+
+    if(oleInPlaceObject != 0)
+    {
+      oleInPlaceObject->SetObjectRects(&rObject, &rObject);
+    }
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
+													 void**ppvObject) override
+  {
+    if (riid == __uuidof(IUnknown))
+    {
+      (*ppvObject) = static_cast<IOleClientSite*>(this);
+    }
+    else if (riid == __uuidof(IOleInPlaceSite))
+    {
+      (*ppvObject) = static_cast<IOleInPlaceSite*>(this);
+    }
+    else
+    {
+      return E_NOINTERFACE;
+    }
+
+    AddRef();
+    return S_OK;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef(void) override
+  {
+    iComRefCount++; 
+    return iComRefCount;
+  }
+
+  ULONG STDMETHODCALLTYPE Release(void) override
+  {
+    iComRefCount--; 
+    return iComRefCount;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetWindow( 
+    __RPC__deref_out_opt HWND *phwnd) override
+  {
+    (*phwnd) = hWndParent;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE ContextSensitiveHelp(
+    BOOL fEnterMode) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE CanInPlaceActivate(void) override
+  {
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE OnInPlaceActivate(void) override
+  {
+    OleLockRunning(oleObject, TRUE, FALSE);
+    oleObject->QueryInterface(&oleInPlaceObject);
+    oleInPlaceObject->SetObjectRects(&rObject, &rObject);
+
+    return S_OK;
+
+  }
+
+  HRESULT STDMETHODCALLTYPE OnUIActivate(void) override
+  {
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetWindowContext( 
+    __RPC__deref_out_opt IOleInPlaceFrame **ppFrame,
+    __RPC__deref_out_opt IOleInPlaceUIWindow **ppDoc,
+    __RPC__out LPRECT lprcPosRect,
+    __RPC__out LPRECT lprcClipRect,
+    __RPC__inout LPOLEINPLACEFRAMEINFO lpFrameInfo) override
+  {
+    HWND hwnd = hWndParent;
+
+    (*ppFrame) = NULL;
+    (*ppDoc) = NULL;
+    (*lprcPosRect).left = rObject.left;
+    (*lprcPosRect).top = rObject.top;
+    (*lprcPosRect).right = rObject.right;
+    (*lprcPosRect).bottom = rObject.bottom;
+    *lprcClipRect = *lprcPosRect;
+
+    lpFrameInfo->fMDIApp = false;
+    lpFrameInfo->hwndFrame = hwnd;
+    lpFrameInfo->haccel = NULL;
+    lpFrameInfo->cAccelEntries = 0;
+
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE Scroll( 
+    SIZE scrollExtant) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE OnUIDeactivate( 
+    BOOL fUndoable) override
+  {
+    return S_OK;
+  }
+
+  HWND GetControlWindow()
+  {
+    if(hWndControl != 0)
+      return hWndControl;
+
+    if(oleInPlaceObject == 0)
+      return 0;
+
+    oleInPlaceObject->GetWindow(&hWndControl);
+    return hWndControl;
+  }
+
+  HRESULT STDMETHODCALLTYPE OnInPlaceDeactivate(void) override
+  {
+    hWndControl = 0;
+    oleInPlaceObject = 0;
+
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE DiscardUndoState(void) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE DeactivateAndUndo(void) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE OnPosRectChange( 
+    __RPC__in LPCRECT lprcPosRect) override
+  {
+    return E_NOTIMPL;
+  }
+
+  // ---------- IOleClientSite ----------
+
+  HRESULT STDMETHODCALLTYPE SaveObject(void) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetMoniker( 
+    DWORD dwAssign,
+    DWORD dwWhichMoniker,
+    __RPC__deref_out_opt IMoniker **ppmk) override
+  {
+    if((dwAssign == OLEGETMONIKER_ONLYIFTHERE) &&
+      (dwWhichMoniker == OLEWHICHMK_CONTAINER))
+      return E_FAIL;
+
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetContainer( 
+    __RPC__deref_out_opt IOleContainer **ppContainer) override
+  {
+    return E_NOINTERFACE;
+  }
+
+  HRESULT STDMETHODCALLTYPE ShowObject(void) override
+  {
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE OnShowWindow( 
+    BOOL fShow) override
+  {
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE RequestNewObjectLayout(void) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateStream( 
+	__RPC__in_string const OLECHAR *pwcsName,
+	DWORD grfMode,
+	DWORD reserved1,
+	DWORD reserved2,
+	__RPC__deref_out_opt IStream **ppstm) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE OpenStream( 
+    const OLECHAR *pwcsName,
+    void *reserved1,
+    DWORD grfMode,
+    DWORD reserved2,
+    IStream **ppstm) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE CreateStorage( 
+    __RPC__in_string const OLECHAR *pwcsName,
+    DWORD grfMode,
+    DWORD reserved1,
+    DWORD reserved2,
+    __RPC__deref_out_opt IStorage **ppstg) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE OpenStorage( 
+    __RPC__in_opt_string const OLECHAR *pwcsName,
+    __RPC__in_opt IStorage *pstgPriority,
+    DWORD grfMode,
+    __RPC__deref_opt_in_opt SNB snbExclude,
+    DWORD reserved,
+    __RPC__deref_out_opt IStorage **ppstg) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE CopyTo( 
+    DWORD ciidExclude,
+    const IID *rgiidExclude,
+    __RPC__in_opt  SNB snbExclude,
+    IStorage *pstgDest) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE MoveElementTo( 
+    __RPC__in_string const OLECHAR *pwcsName,
+    __RPC__in_opt IStorage *pstgDest,
+    __RPC__in_string const OLECHAR *pwcsNewName,
+    DWORD grfFlags) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE Commit( 
+    DWORD grfCommitFlags) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE Revert(void) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE EnumElements( 
+    DWORD reserved1,
+    void *reserved2,
+    DWORD reserved3,
+    IEnumSTATSTG **ppenum) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE DestroyElement( 
+    __RPC__in_string const OLECHAR *pwcsName) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE RenameElement( 
+    __RPC__in_string const OLECHAR *pwcsOldName,
+    __RPC__in_string const OLECHAR *pwcsNewName) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE SetElementTimes( 
+    __RPC__in_opt_string const OLECHAR *pwcsName,
+    __RPC__in_opt const FILETIME *pctime,
+    __RPC__in_opt const FILETIME *patime,
+    __RPC__in_opt const FILETIME *pmtime) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE SetClass(
+    __RPC__in REFCLSID clsid) override
+  {
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE SetStateBits( 
+    DWORD grfStateBits,
+    DWORD grfMask) override
+  {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE Stat( 
+    __RPC__out STATSTG *pstatstg,
+    DWORD grfStatFlag) override
+  {
+    return E_NOTIMPL;
+  }
+
+private:
+  std::string init_js = "";
+  IOleObject* oleObject;
+	IOleInPlaceObject* oleInPlaceObject;
+
+	IWebBrowser2* webBrowser2 = nullptr;
+
+	LONG iComRefCount;
+
+	RECT rObject;
+
+	HWND hWndParent;
+	HWND hWndControl;
 };
 
 //
@@ -1109,6 +1580,9 @@ public:
     auto cb =
         std::bind(&win32_edge_engine::on_message, this, std::placeholders::_1);
 
+    // testing purpose only
+    // m_browser = std::make_unique<webview::ms_ie>();
+    // m_browser->embed(m_window, debug, cb);
     if (!m_browser->embed(m_window, debug, cb)) {
       m_browser = std::make_unique<webview::edge_html>();
       m_browser->embed(m_window, debug, cb);
