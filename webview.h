@@ -808,6 +808,9 @@ using browser_engine = cocoa_wkwebview_engine;
 #include <tchar.h>
 #include <Windows.h>
 #include <mshtml.h>
+#include <Shlobj.h>
+
+#pragma comment(lib, "Shell32.lib")
 
 #define WEBVIEW_KEY_FEATURE_BROWSER_EMULATION                                  \
   "Software\\Microsoft\\Internet "                                             \
@@ -872,6 +875,8 @@ public:
     if (FAILED(hr)) {
       return false;
     }
+
+    hr = oleObject->SetHostNames(L"WEBVIEWMSIEHOST", L"WEBVIEWMSIEDOC");
 
     hr = oleObject->QueryInterface(&webBrowser2);
     if (FAILED(hr)) {
@@ -1580,12 +1585,14 @@ public:
     auto cb =
         std::bind(&win32_edge_engine::on_message, this, std::placeholders::_1);
 
-    // testing purpose only
-    // m_browser = std::make_unique<webview::ms_ie>();
-    // m_browser->embed(m_window, debug, cb);
     if (!m_browser->embed(m_window, debug, cb)) {
-      m_browser = std::make_unique<webview::edge_html>();
-      m_browser->embed(m_window, debug, cb);
+      if(IsUserAnAdmin()) {
+        m_browser = std::make_unique<webview::ms_ie>();
+        m_browser->embed(m_window, debug, cb);
+      } else {
+        m_browser = std::make_unique<webview::edge_html>();
+        m_browser->embed(m_window, debug, cb);
+      }
     }
 
     m_browser->resize(m_window);

@@ -30,15 +30,16 @@ int main()
     <html>
       <body>hello</body>
       <script>
-        window.onload = function() {
-          document.body.innerText = `hello, ${navigator.userAgent}`;
-          noop('hello').then(function(res) {
-            console.log('noop res', res);
-          });
-          add(1, 2).then(function(res) {
-            console.log('add res', res);
-          });
-        };
+        // window.onload = function() {
+        //   document.body.innerText = `hello, ${navigator.userAgent}`;
+        //   noop('hello').then(function(res) {
+        //     console.log('noop res', res);
+        //   });
+        //   add(1, 2).then(function(res) {
+        //     console.log('add res', res);
+        //   });
+        // };
+        (function(){document.body.innerText = JSON.stringify(Object.getOwnPropertyNames(window.external));})();
       </script>
     </html>
   )");
