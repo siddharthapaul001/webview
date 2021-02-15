@@ -28,6 +28,19 @@
 extern "C" {
 #endif
 
+
+#if !defined(WEBVIEW_GTK) && !defined(WEBVIEW_COCOA) && !defined(WEBVIEW_WINAPI)
+#if defined(__linux__)
+#define WEBVIEW_GTK
+#elif defined(__APPLE__)
+#define WEBVIEW_COCOA
+#elif defined(_WIN32)
+#define WEBVIEW_WINAPI
+#else
+#error "please, specify webview backend"
+#endif
+#endif
+
 #ifdef WEBVIEW_STATIC
 #define WEBVIEW_API static
 #else
@@ -62,6 +75,7 @@ struct webview_priv {
 #include <mshtmhst.h>
 #include <mshtml.h>
 #include <shobjidl.h>
+#include <shellscalingapi.h>
 
 #include <stdio.h>
 
@@ -491,6 +505,7 @@ WEBVIEW_API void webview_print_log(const char *s) {
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
+#pragma comment(lib, "Shcore.lib")
 
 #define WM_WEBVIEW_DISPATCH (WM_APP + 1)
 
@@ -1248,6 +1263,7 @@ WEBVIEW_API int webview_init(struct webview *w) {
 
   DisplayHTMLPage(w);
 
+  SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
   SetWindowText(w->priv.hwnd, w->title);
   ShowWindow(w->priv.hwnd, SW_SHOWDEFAULT);
   UpdateWindow(w->priv.hwnd);
