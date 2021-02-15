@@ -75,6 +75,7 @@ struct webview_priv {
 #include <mshtmhst.h>
 #include <mshtml.h>
 #include <shobjidl.h>
+#include <windef.h>
 #include <winuser.h>
 
 #include <stdio.h>
