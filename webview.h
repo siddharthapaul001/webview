@@ -75,6 +75,7 @@ struct webview_priv {
 #include <mshtmhst.h>
 #include <mshtml.h>
 #include <shobjidl.h>
+#include <winuser.h>
 
 #include <stdio.h>
 
@@ -1261,6 +1262,7 @@ WEBVIEW_API int webview_init(struct webview *w) {
 
   DisplayHTMLPage(w);
 
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
   SetWindowText(w->priv.hwnd, w->title);
   ShowWindow(w->priv.hwnd, SW_SHOWDEFAULT);
   UpdateWindow(w->priv.hwnd);
